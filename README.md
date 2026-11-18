@@ -53,3 +53,5 @@ For now some fields from QBiome are not treated, here is a list of those fields 
 - Habitat
 - releve_type
 - Stade de dégradation
+
+All observations are added with the same observer(s) and determiner(s)

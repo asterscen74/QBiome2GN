@@ -85,6 +85,7 @@ fields_to_check = [
         ]
 
 
+# Check if layers exists
 if QgsProject.instance().mapLayersByName(
     layer_name_releve
 ) and QgsProject.instance().mapLayersByName(layer_name_flore):
@@ -99,6 +100,8 @@ if QgsProject.instance().mapLayersByName(
 
 # Global FUNCTION
 def get_coord(layer, geometry_type, feature_id):
+    """Transform a point geometry to reproject it to geonature's crs
+    """
     if geometry_type == "Point":
         feature = layer.getFeature(feature_id)
         geom = feature.geometry()
@@ -120,6 +123,9 @@ def join_attributes(
     target_field,
     join_field_prefix,
 ):
+    """Create an attribute join between 2 layers
+    https://gis.stackexchange.com/a/267784
+    """
     joinObject = QgsVectorLayerJoinInfo()
     joinObject.setJoinLayerId(attribute_layer.id())
     joinObject.setJoinLayer(attribute_layer)
@@ -131,6 +137,8 @@ def join_attributes(
 
 
 def launch_dlg(network_manager, properties, iface, flore_layer):
+    """Launch the second dialog after the nomenclatures are downloaded
+    """
     dialog = Dialog(
         network_manager,
         properties,
@@ -142,8 +150,7 @@ def launch_dlg(network_manager, properties, iface, flore_layer):
 class GetProperties(QObject):
     finished_dl_users = pyqtSignal()
     finished_dl = pyqtSignal()
-    """Get multiples informations from a getcapabilities request.
-    List all dictionnary from GeoNature used to get ZH caracteristics.
+    """Get nomenclatures from GeoNature
     The arguments are :
     - a network manager to realize the web request : QNetworkManager
     """
@@ -168,7 +175,8 @@ class GetProperties(QObject):
         self.login = Login(network_manager)
 
         # Connect a function to the finished signal of the login request to
-        # launch a function
+        # launch the nomenclature's download with the login info.
+        # The download only starts if the login infos are correct.
         self.login.finished_login.connect(lambda: self.get_users())
         if not self.login.accepted:
             self.login.exec_()
@@ -479,10 +487,9 @@ class Dialog(QDialog):
         flore_layer,
     ):
         """
-        Constructor
-
-        @param parent reference to the parent widget
-        @type QDialog
+        Simple Dialog to select the observer and the dataset.
+        All features or selected features will be imported with
+        the same observer/determiner and dataset.
         """
         QDialog.__init__(self)
 
@@ -494,7 +501,7 @@ class Dialog(QDialog):
             selection = True
         qflore_datasets = QgsVectorLayerUtils.getValues(
             flore_layer, "Projet", selectedOnly=selection
-        )[0] 
+        )[0]
         qflore_users = QgsVectorLayerUtils.getValues(
             flore_layer, "Observateur", selectedOnly=selection
         )[0]
@@ -583,7 +590,9 @@ class Dialog(QDialog):
 
 class ImportData(QObject):
     finished_dl = pyqtSignal()
-    """
+    """ Class to import all features or selected features from a layer
+    into the Occtax Module. It will create a survey and an observation
+    for every feature.
     """
 
     def __init__(
@@ -597,7 +606,7 @@ class ImportData(QObject):
         self.login = login
         self.network_manager = network_manager
         self.flore_layer = flore_layer
-        
+
         self.user_id = list(
             map(
                 int, parent.select_user_combo_box.checkedItemsData()
@@ -631,10 +640,6 @@ class ImportData(QObject):
             )
 
     @property
-    def url(self):
-        return self._url
-
-    @property
     def pending_downloads(self):
         return self._pending_downloads
 
@@ -643,6 +648,9 @@ class ImportData(QObject):
         return self._pending_features
 
     def verif(self):
+        """Check NULL values in fields in the list fields.
+        If one NULL value is spoted, script is stopped.
+        """
         for field in fields_to_check:
             values_in_field = QgsVectorLayerUtils.getValues(
                 self.flore_layer,
@@ -654,6 +662,9 @@ class ImportData(QObject):
         return True
 
     def check_if_value_is_not_null(self, value, label, comment):
+        """Check NULL value in a field.
+        If the field is not NULL, it is used to create a survey comment.
+        """
         if value != NULL:
             comment = comment + "\n" + label + " " + str(value)
         else:
@@ -661,6 +672,9 @@ class ImportData(QObject):
         return comment
 
     def create_comment(self, feature):
+        """Create a survey comment based on some fields.
+        Every value of a field is tested.
+        """
         comment = "Releve Phytosocio : " + str(feature["Releve"])
         comment_content = {
             "Exposition :": feature[join_field_prefix + "Exposition"],
@@ -679,6 +693,8 @@ class ImportData(QObject):
         return comment
 
     def geo_download(self, feature_id):
+        """Get altitude from GeoNature's API.
+        """
         geom_type_text = QgsWkbTypes.geometryDisplayString(
             self.flore_layer.geometryType()
         )
@@ -695,7 +711,7 @@ class ImportData(QObject):
         self.network_manager.setCookieJar(self.login.cookies)
         reply = self.network_manager.post(request, document.toJson())
         reply.finished.connect(
-            lambda: self.creation_releve(
+            lambda: self.creation_survey(
                 geom_type_text,
                 coord,
                 feature_id,
@@ -703,13 +719,15 @@ class ImportData(QObject):
             )
         )
 
-    def creation_releve(
+    def creation_survey(
         self,
         geometry_type,
         coordinates,
         feature_id,
         geo_reply,
     ):
+        """POST Request to create a survey in the OCCTAX Module
+        """
         feature = self.flore_layer.getFeature(feature_id)
         altitude = json.loads(geo_reply.readAll().data().decode())
         url = QUrl(
@@ -830,9 +848,12 @@ class ImportData(QObject):
         }
         document = QJsonDocument(json_data)
         reply = self.network_manager.post(request, document.toJson())
-        reply.finished.connect(lambda: self.ajout_occurence(reply, feature))
+        reply.finished.connect(lambda: self.add_observation(reply, feature))
 
-    def ajout_occurence(self, reply, feature):
+    def add_observation(self, reply, feature):
+        """POST Request to create an observatuion in the OCCTAX Module.
+        It will be apart of the survey created previously.
+        """
         data_request = reply.readAll().data().decode()
         data = json.loads(data_request)
         url = QUrl(
@@ -905,6 +926,9 @@ class ImportData(QObject):
         self._pending_downloads += 1
 
     def handle_finished(self, reply):
+        """The End of the feature import.
+        The process for the next feature is launched.
+        """
         self._pending_downloads -= 1
         self._pending_features -= 1
         if reply.error() != QNetworkReply.NoError:
